@@ -74,6 +74,8 @@ struct Subprocess {
 #endif
   bool use_console_;
 
+  string command_;
+
   friend struct SubprocessSet;
 };
 

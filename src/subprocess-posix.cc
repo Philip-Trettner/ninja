@@ -25,6 +25,59 @@
 #include <sys/wait.h>
 #include <spawn.h>
 
+#include <chrono>
+#include <fstream>
+#include <regex>
+
+struct tracer {
+  std::ofstream _file{"ninja-trace.json"};
+  bool first = true;
+  std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
+
+  int next_id = 1;
+  std::vector<int> free_ids;
+  std::map<Subprocess const*, int> mapped_ids;
+
+  float timestamp() const { return std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - start).count() * 1000 * 1000; }
+
+  void fix_cmd(std::string& cmd) {
+    cmd = std::regex_replace(cmd, std::regex("\\\\"), "\\\\");
+    cmd = std::regex_replace(cmd, std::regex("\""), "\\\"");
+  }
+
+  void begin(Subprocess const* p, std::string cmd) {
+    if (free_ids.empty())
+      mapped_ids[p] = next_id++;
+    else {
+      mapped_ids[p] = free_ids.back();
+      free_ids.pop_back();
+    }
+
+    if (first)
+      first = false;
+    else
+      _file << ",\n"; 
+    
+    fix_cmd(cmd);
+    _file << "{\"name\": \"" << cmd << "\", \"cat\": \"PERF\", \"ph\": \"B\", \"pid\": " << mapped_ids[p] << ", \"ts\": " << timestamp() << "}";
+  }
+
+  void end(Subprocess const* p, std::string cmd) {
+    _file << ",\n";
+    free_ids.push_back(mapped_ids[p]);
+    fix_cmd(cmd);
+    _file << "{\"name\": \"" << cmd << "\", \"cat\": \"PERF\", \"ph\": \"E\", \"pid\": " << mapped_ids[p] << ", \"ts\": " << timestamp() << "}";
+  }
+
+  tracer() {
+    _file << "[";
+  }
+  ~tracer() {
+    _file << "]\n";
+  }  
+};
+static tracer _tracer;
+
 extern char** environ;
 
 #include "util.h"
@@ -42,6 +95,8 @@ Subprocess::~Subprocess() {
 }
 
 bool Subprocess::Start(SubprocessSet* set, const string& command) {
+  command_ = command;
+
   int output_pipe[2];
   if (pipe(output_pipe) < 0)
     Fatal("pipe: %s", strerror(errno));
@@ -116,6 +171,8 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
   if (err != 0)
     Fatal("posix_spawn: %s", strerror(err));
 
+  _tracer.begin(this, command);
+
   err = posix_spawnattr_destroy(&attr);
   if (err != 0)
     Fatal("posix_spawnattr_destroy: %s", strerror(err));
@@ -145,6 +202,7 @@ ExitStatus Subprocess::Finish() {
   int status;
   if (waitpid(pid_, &status, 0) < 0)
     Fatal("waitpid(%d): %s", pid_, strerror(errno));
+  _tracer.end(this, command_);
   pid_ = -1;
 
   if (WIFEXITED(status)) {
