@@ -30,13 +30,15 @@
 #include <regex>
 
 struct tracer {
-  std::ofstream _file{"ninja-trace.json"};
+  std::ofstream file{"ninja-trace.json"};
+  std::ofstream csv{"ninja-trace.csv"};
   bool first = true;
   std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
 
   int next_id = 1;
   std::vector<int> free_ids;
   std::map<Subprocess const*, int> mapped_ids;
+  std::map<Subprocess const*, float> start_times;
 
   float timestamp() const { return std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - start).count() * 1000 * 1000; }
 
@@ -56,24 +58,29 @@ struct tracer {
     if (first)
       first = false;
     else
-      _file << ",\n"; 
+      file << ",\n"; 
     
     fix_cmd(cmd);
-    _file << "{\"name\": \"" << cmd << "\", \"cat\": \"PERF\", \"ph\": \"B\", \"pid\": " << mapped_ids[p] << ", \"ts\": " << timestamp() << "}";
+    auto t = timestamp();
+    start_times[p] = t;
+    file << "{\"name\": \"" << cmd << "\", \"cat\": \"PERF\", \"ph\": \"B\", \"pid\": " << mapped_ids[p] << ", \"ts\": " << t << "}";
   }
 
   void end(Subprocess const* p, std::string cmd) {
-    _file << ",\n";
+    file << ",\n";
     free_ids.push_back(mapped_ids[p]);
     fix_cmd(cmd);
-    _file << "{\"name\": \"" << cmd << "\", \"cat\": \"PERF\", \"ph\": \"E\", \"pid\": " << mapped_ids[p] << ", \"ts\": " << timestamp() << "}";
+    auto t = timestamp();
+    file << "{\"name\": \"" << cmd << "\", \"cat\": \"PERF\", \"ph\": \"E\", \"pid\": " << mapped_ids[p] << ", \"ts\": " << t << "}";
+    csv << "\"" << cmd << "\"," << t - start_times[p] << "\n";
   }
 
   tracer() {
-    _file << "[";
+    file << "[";
+    csv << "cmd,us\n";
   }
   ~tracer() {
-    _file << "]\n";
+    file << "]\n";
   }  
 };
 static tracer _tracer;
